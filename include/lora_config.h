@@ -20,12 +20,12 @@ extern SX1262 radio;
 
 // --- PROTOCOLO BINARIO (MESH) ---
 // ID del nodo actual (cambiar según necesidad)
-#define MY_ID 2
+#define MY_ID 1
 #define GATEWAY_ID 1
 #define BROADCAST_ID 255
 
-// Tamaño del paquete binario: 18 bytes
-#define PACKET_SIZE 18
+// Tamaño del paquete binario: 14 bytes
+#define PACKET_SIZE 14
 
 // --- CONFIGURACIÓN DE DESINCRONIZACIÓN (anti-colisiones) ---
 // Jitter máximo en milisegundos (delay aleatorio antes de cada TX)

@@ -117,7 +117,7 @@ void listenAndForward()
         {
             // Deserializar solo los campos esenciales primero
             uint8_t src = buffer[0];
-            uint16_t seq = (buffer[2] << 8) | buffer[3];
+            uint16_t seq = (buffer[1] << 8) | buffer[2];
 
             // === MEJORA 1: IGNORAR PAQUETES PROPIOS INMEDIATAMENTE ===
             // Verificar ANTES de procesar nada (deserializar, mostrar, etc.)
@@ -134,20 +134,18 @@ void listenAndForward()
             float rssi = radio.getRSSI();
 
             // Deserializar resto de campos del paquete binario
-            uint8_t dst = buffer[1];
-            uint8_t ttl = buffer[4];
+            uint8_t ttl = buffer[3];
 
             // Extraer floats
-            float lat, lon, batt;
-            memcpy(&lat, &buffer[5], 4);
-            memcpy(&lon, &buffer[9], 4);
-            uint8_t stateCode = buffer[13];
-            memcpy(&batt, &buffer[14], 4);
+            float lat, lon;
+            memcpy(&lat, &buffer[4], 4);
+            memcpy(&lon, &buffer[8], 4);
+            uint8_t stateCode = buffer[12];
 
-            Serial.printf("[MESH-RX] src=%d, dst=%d, seq=%d, ttl=%d, rssi=%.1f dBm\n",
-                          src, dst, seq, ttl, rssi);
-            Serial.printf("          lat=%.6f, lon=%.6f, state=%d, batt=%.2f\n",
-                          lat, lon, stateCode, batt);
+            Serial.printf("[MESH-RX] src=%d, seq=%d, ttl=%d, rssi=%.1f dBm\n",
+                          src, seq, ttl, rssi);
+            Serial.printf("          lat=%.6f, lon=%.6f, state=%d\n",
+                          lat, lon, stateCode);
 
             // Mostrar en pantalla
             displayText(String("src: " + String(src)).c_str(), 0, 0);
@@ -167,9 +165,9 @@ void listenAndForward()
             // === GUARDAR COMO VISTO ===
             markPacketAsSeen(src, seq);
 
-            // === STORE & FORWARD: Si va al gateway y ttl > 0, reenviar ===
+            // === STORE & FORWARD: Si ttl > 0, reenviar ===
             bool forwarded = false;
-            if (dst == GATEWAY_ID && ttl > 0)
+            if (ttl > 0)
             {
                 // === MEJORA 3: Verificar separación temporal antes de reenviar ===
                 if (!canForward())
@@ -182,7 +180,7 @@ void listenAndForward()
                 }
                 
                 // Decrementar TTL
-                buffer[4] = ttl - 1;
+                buffer[3] = ttl - 1;
 
                 // Reempaquetar y reenviar
                 Serial.printf("[MESH] Reenviando paquete (nuevo ttl=%d)...\n", ttl - 1);
@@ -209,14 +207,10 @@ void listenAndForward()
                     switchToReceiveMode();
                 }
             }
-            else if (dst == BROADCAST_ID || dst == MY_ID)
-            {
-                // El mensaje es para nosotros o es broadcast, solo mostrarlo
-                Serial.println("[MESH] Mensaje recibido para mí o broadcast.");
-            }
             else
             {
-                Serial.printf("[MESH] El paquete no es para mí (dst=%d, yo soy %d)\n", dst, MY_ID);
+                // TTL llegó a 0, no reenviar
+                Serial.println("[MESH] TTL agotado, no se reenvía el paquete.");
             }
 
             // Volver al modo recepción (solo si no iniciamos un reenvío)

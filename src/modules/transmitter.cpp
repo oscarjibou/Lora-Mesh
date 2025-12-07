@@ -70,39 +70,35 @@ void transmitterLoop()
     }
 }
 
-// [NUEVO] Envía el estado del nodo en protocolo binario (18 bytes)
+// [NUEVO] Envía el estado del nodo en protocolo binario (14 bytes)
 void sendMyStatus()
 {
-    // Crear buffer binario de 18 bytes
+    // Crear buffer binario de 14 bytes
     uint8_t buffer[PACKET_SIZE];
 
     // Simular datos (en producción, obtener de sensores reales)
     float latitude = 39.492032;
     float longitude = -0.374011;
-    float batteryVoltage = 4.2;
 
     // Serializar cada campo en orden (big-endian para consistencia)
     buffer[0] = MY_ID;      // src (1 byte)
-    buffer[1] = GATEWAY_ID; // dst (1 byte)
+    // buffer[1] = GATEWAY_ID; // dst (1 byte)
 
     // seq (2 bytes)
-    buffer[2] = (mySeqNumber >> 8) & 0xFF;
-    buffer[3] = mySeqNumber & 0xFF;
+    buffer[1] = (mySeqNumber >> 8) & 0xFF;
+    buffer[2] = mySeqNumber & 0xFF;
     uint16_t currentSeq = mySeqNumber; // Guardar número de secuencia antes de incrementar
     mySeqNumber++;
 
-    buffer[4] = 3; // ttl (1 byte) - mínimo 3 saltos
+    buffer[3] = 3; // ttl (1 byte) - mínimo 3 saltos
 
     // lat (4 bytes) - copiar bytes como float
-    memcpy(&buffer[5], &latitude, 4);
+    memcpy(&buffer[4], &latitude, 4);
 
     // lon (4 bytes)
-    memcpy(&buffer[9], &longitude, 4);
+    memcpy(&buffer[8], &longitude, 4);
 
-    buffer[13] = sosMode; // state (1 byte): 0=OK, 1=SOS
-
-    // batt (4 bytes)
-    memcpy(&buffer[14], &batteryVoltage, 4);
+    buffer[12] = sosMode; // state (1 byte): 0=OK, 1=SOS
 
     // === MEJORA 2: MARCAR PAQUETE PROPIO COMO VISTO ANTES DE ENVIAR ===
     // Así si nos llega de vuelta por reenvío, lo ignoraremos inmediatamente

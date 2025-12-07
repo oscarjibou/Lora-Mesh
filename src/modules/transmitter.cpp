@@ -76,9 +76,14 @@ void sendMyStatus()
     // Crear buffer binario de 14 bytes
     uint8_t buffer[PACKET_SIZE];
 
-    // Simular datos (en producción, obtener de sensores reales)
-    float latitude = 39.492032;
-    float longitude = -0.374011;
+    // Coordenadas base (Madrid, España)
+    const float baseLatitude = 40.4168;
+    const float baseLongitude = -3.7038;
+    
+    // Añadir desviación aleatoria pequeña (±0.0001 grados ≈ 10 metros)
+    // Cada nodo y cada transmisión tendrá coordenadas ligeramente diferentes
+    float latitude = baseLatitude + (random(-1000, 1001) / 10000.0);
+    float longitude = baseLongitude + (random(-1000, 1001) / 10000.0);
 
     // Serializar cada campo en orden (big-endian para consistencia)
     buffer[0] = MY_ID;      // src (1 byte)
@@ -111,8 +116,8 @@ void sendMyStatus()
     int16_t st = radio.startTransmit(buffer, PACKET_SIZE);
     if (st == RADIOLIB_ERR_NONE)
     {
-        Serial.printf("[MESH-TX] Enviado: src=%d, dst=%d, seq=%d, ttl=3, state=%d\n",
-                      MY_ID, GATEWAY_ID, currentSeq, sosMode);
+        Serial.printf("[MESH-TX] Enviado: src=%d, dst=%d, seq=%d, ttl=3, state=%d, lat=%.6f, lon=%.6f\n",
+                      MY_ID, GATEWAY_ID, currentSeq, sosMode, latitude, longitude);
     }
     else
     {

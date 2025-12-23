@@ -33,16 +33,13 @@ void initDisplay()
     vextON();
     delay(100);
 
-    // Inicia I2C en los pines de la V3
-    Wire.begin(SDA_OLED, SCL_OLED);
-
     // Inicializa la pantalla
     display.init();
     display.clear();
-    display.setFont(ArialMT_Plain_16);
+    display.setFont(ArialMT_Plain_10);
 
     // Muestra un texto
-    display.drawString(0, 0, "Starting...");
+    display.drawString(0, 0, "Lora Mesh");
     display.display();
     delay(2000);
 
@@ -55,6 +52,14 @@ void initDisplay()
 
 void displayText(const char *text, int x, int y)
 {
+    display.setFont(ArialMT_Plain_10);
+    display.drawString(x, y, text);
+    display.display();
+}
+
+void displayTextLarge(const char *text, int x, int y)
+{
+    display.setFont(ArialMT_Plain_16);
     display.drawString(x, y, text);
     display.display();
 }

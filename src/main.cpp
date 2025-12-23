@@ -1,8 +1,10 @@
 #include <Arduino.h>
-#include "transmitter.h"
-#include "receiver.h"
-#include "display.h"
-#include "lora_config.h"
+#include <transmitter.h>
+#include <receiver.h>
+#include <display.h>
+#include <lora_config.h>
+#include <Wire.h>
+#include <mpu6050.h>
 
 // Configuración del modo del nodo
 // true = Solo gateway (solo recibe, no envía ni reenvía)
@@ -22,6 +24,9 @@ void setup()
   while (!Serial)
     ;
 
+  Wire.begin(SDA_OLED, SCL_OLED);
+  Wire.setClock(400000);  // Frecuencia del display
+
   Serial.println("Inicializando nodo mesh...");
 
   // Inicializar generador aleatorio con semilla basada en MY_ID y tiempo
@@ -32,6 +37,12 @@ void setup()
 
   // Inicializar la pantalla OLED
   initDisplay();
+
+  Serial.println("Display inicializado");
+
+  // Inicializar el sensor MPU6050
+  initMPU6050();
+  Serial.println("MPU6050 inicializado");
 
   // Inicializar radio en modo mesh (soporta TX y RX)
   meshRadioSetup();
@@ -60,6 +71,15 @@ void loop()
   static unsigned long systemStartTime = 0; // Tiempo de inicio del sistema
   static bool firstTxDone = false; // Para aplicar offset solo a la primera TX
   unsigned long currentTime = millis();
+
+  // Obtener eventos de sensores
+  MPU6050Data data;
+  if (!readMPU6050(&data)) {
+    Serial.println("Error al leer el sensor MPU6050");
+    delay(500);
+    return;
+  }
+
 
   // Inicializar tiempo de inicio en la primera ejecución
   if (systemStartTime == 0)
@@ -115,6 +135,19 @@ void loop()
       
       Serial.println("[MAIN] Enviando estado propio...");
       displayText("Enviando estado...", 0, 0);
+
+      // Mostrar datos del acelerómetro
+      Serial.println("\n--- DATOS DEL SENSOR MPU6050 ---");
+      Serial.println("Acelerómetro (m/s²):");
+      Serial.printf("  X: %.2f\n", data.accel.acceleration.x);
+      Serial.printf("  Y: %.2f\n", data.accel.acceleration.y);
+      Serial.printf("  Z: %.2f\n", data.accel.acceleration.z);
+      Serial.println("Giroscopio (rad/s):");
+      Serial.printf("  X: %.2f\n", data.gyro.gyro.x);
+      Serial.printf("  Y: %.2f\n", data.gyro.gyro.y);
+      Serial.printf("  Z: %.2f\n", data.gyro.gyro.z);
+      Serial.println("Temperatura (°C):");
+      Serial.printf("  %.2f\n", data.temp.temperature);
 
       // Enviar usando protocolo binario (18 bytes)
       sendMyStatus();

@@ -5,8 +5,58 @@
 #include <lora_config.h>
 #include <Wire.h>
 #include <mpu6050.h>
+#include <gps_driver.h>
 
-// Configuración del modo del nodo
+// Mutex para proteger el bus I2C entre tareas
+SemaphoreHandle_t i2cMutex;
+
+// Variable global para comunicar estado de caida al transmisor
+volatile bool fallDetected = false;
+
+// Instancia global del GPS
+GpsDriver gps;
+
+// Tarea de deteccion de caidas (corre en nucleo 0)
+void fallDetectionTask(void *parameter) {
+  MPU6050Data data;
+  FallInfo info;
+  
+  Serial.println("[FALL] Tarea de deteccion de caidas iniciada");
+  
+  while (true) {
+    // Tomar el mutex antes de acceder al I2C
+    if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE) {
+      if (readMPU6050(&data)) {
+        // Liberar mutex despues de leer
+        xSemaphoreGive(i2cMutex);
+        
+        // Verificar caida con informacion detallada
+        if (detectFallsWithInfo(&data, &info)) {
+          fallDetected = true;  // Marcar caida para incluir en el proximo mensaje
+          Serial.println("\n========================================");
+          Serial.println("         CAIDA DETECTADA");
+          Serial.println("========================================");
+          Serial.printf("TIPO: %s\n", getFallTypeName(info.type));
+          Serial.println("----------------------------------------");
+          Serial.printf("Valor detectado: %.2f\n", info.valueTriggered);
+          Serial.printf("Umbral superado: %.2f\n", info.thresholdTriggered);
+          Serial.println("----------------------------------------");
+          Serial.println("Valores actuales:");
+          Serial.printf("  Accel Mag: %.2f m/s2\n", info.accelMagnitude);
+          Serial.printf("  Roll:      %.2f deg\n", info.roll);
+          Serial.printf("  Pitch:     %.2f deg\n", info.pitch);
+          Serial.printf("  Gyro Mag:  %.2f rad/s\n", info.gyroMagnitude);
+          Serial.println("========================================\n");
+        }
+      } else {
+        xSemaphoreGive(i2cMutex);
+      }
+    }
+    vTaskDelay(50 / portTICK_PERIOD_MS); // Muestreo cada 50ms (20Hz)
+  }
+}
+
+// Configuracion del modo del nodo
 // true = Solo gateway (solo recibe, no envía ni reenvía)
 // false = Nodo mesh completo (envía su estado Y reenvía mensajes)
 const bool isGatewayOnly = false;
@@ -23,6 +73,9 @@ void setup()
   Serial.begin(115200);
   while (!Serial)
     ;
+
+  // Crear mutex para I2C
+  i2cMutex = xSemaphoreCreateMutex();
 
   Wire.begin(SDA_OLED, SCL_OLED);
   Wire.setClock(400000);  // Frecuencia del display
@@ -43,6 +96,22 @@ void setup()
   // Inicializar el sensor MPU6050
   initMPU6050();
   Serial.println("MPU6050 inicializado");
+
+  // Inicializar el módulo GPS NEO-6M
+  gps.begin(GPS_TX_PIN, GPS_RX_PIN, GPS_BAUD);
+  Serial.println("GPS NEO-6M inicializado. Esperando fix...");
+
+  // Crear tarea de deteccion de caidas en nucleo 0
+  xTaskCreatePinnedToCore(
+    fallDetectionTask,    // Funcion de la tarea
+    "FallDetection",      // Nombre de la tarea
+    4096,                 // Tamano del stack
+    NULL,                 // Parametros
+    2,                    // Prioridad alta (2)
+    NULL,                 // Handle de la tarea
+    0                     // Nucleo 0 (loop() corre en nucleo 1)
+  );
+  Serial.println("Tarea de deteccion de caidas iniciada en nucleo 0");
 
   // Inicializar radio en modo mesh (soporta TX y RX)
   meshRadioSetup();
@@ -72,12 +141,19 @@ void loop()
   static bool firstTxDone = false; // Para aplicar offset solo a la primera TX
   unsigned long currentTime = millis();
 
-  // Obtener eventos de sensores
+  // Actualizar datos del GPS (debe llamarse frecuentemente)
+  gps.update();
+
+  // Obtener eventos de sensores (protegido con mutex)
   MPU6050Data data;
-  if (!readMPU6050(&data)) {
-    Serial.println("Error al leer el sensor MPU6050");
-    delay(500);
-    return;
+  if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE) {
+    bool readOk = readMPU6050(&data);
+    xSemaphoreGive(i2cMutex);
+    if (!readOk) {
+      Serial.println("Error al leer el sensor MPU6050");
+      delay(500);
+      return;
+    }
   }
 
 
@@ -136,18 +212,18 @@ void loop()
       Serial.println("[MAIN] Enviando estado propio...");
       displayText("Enviando estado...", 0, 0);
 
-      // Mostrar datos del acelerómetro
-      Serial.println("\n--- DATOS DEL SENSOR MPU6050 ---");
-      Serial.println("Acelerómetro (m/s²):");
-      Serial.printf("  X: %.2f\n", data.accel.acceleration.x);
-      Serial.printf("  Y: %.2f\n", data.accel.acceleration.y);
-      Serial.printf("  Z: %.2f\n", data.accel.acceleration.z);
-      Serial.println("Giroscopio (rad/s):");
-      Serial.printf("  X: %.2f\n", data.gyro.gyro.x);
-      Serial.printf("  Y: %.2f\n", data.gyro.gyro.y);
-      Serial.printf("  Z: %.2f\n", data.gyro.gyro.z);
-      Serial.println("Temperatura (°C):");
-      Serial.printf("  %.2f\n", data.temp.temperature);
+      // // Mostrar datos del acelerómetro
+      // Serial.println("\n--- DATOS DEL SENSOR MPU6050 ---");
+      // Serial.println("Acelerómetro (m/s²):");
+      // Serial.printf("  X: %.2f\n", data.accel.acceleration.x);
+      // Serial.printf("  Y: %.2f\n", data.accel.acceleration.y);
+      // Serial.printf("  Z: %.2f\n", data.accel.acceleration.z);
+      // Serial.println("Giroscopio (rad/s):");
+      // Serial.printf("  X: %.2f\n", data.gyro.gyro.x);
+      // Serial.printf("  Y: %.2f\n", data.gyro.gyro.y);
+      // Serial.printf("  Z: %.2f\n", data.gyro.gyro.z);
+      // Serial.println("Temperatura (°C):");
+      // Serial.printf("  %.2f\n", data.temp.temperature);
 
       // Enviar usando protocolo binario (18 bytes)
       sendMyStatus();

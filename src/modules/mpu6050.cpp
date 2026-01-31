@@ -14,6 +14,12 @@
 #define SDA_PIN 4
 #define SCL_PIN 5
 
+// Umbrales configurables para deteccion de caidas
+#define FREE_FALL_THRESHOLD 2.0      // m/s2 (magnitud minima para caida libre)
+#define IMPACT_THRESHOLD 25.0        // m/s2 (magnitud maxima para impacto)
+#define TILT_THRESHOLD 45.0          // grados (inclinacion brusca)
+#define ROTATION_THRESHOLD 2.0       // rad/s (rotacion rapida)
+
 // Instancia global (static) del sensor MPU6050
 static Adafruit_MPU6050 mpu;
 
@@ -128,4 +134,104 @@ void displayMPU6050Data(MPU6050Data* data) {
   Serial.printf("Pitch: %.2f°\n", pitch);
 
   Serial.println("---------------------------------\n");
+}
+
+// Funcion auxiliar para calcular magnitud de aceleracion
+static float calculateAccelMagnitude(sensors_event_t* accel) {
+  if (accel == nullptr) {
+    return 0.0;
+  }
+  return sqrt(accel->acceleration.x * accel->acceleration.x +
+              accel->acceleration.y * accel->acceleration.y +
+              accel->acceleration.z * accel->acceleration.z);
+}
+
+// Funcion auxiliar para calcular magnitud de velocidad angular
+static float calculateGyroMagnitude(sensors_event_t* gyro) {
+  if (gyro == nullptr) {
+    return 0.0;
+  }
+  return sqrt(gyro->gyro.x * gyro->gyro.x +
+              gyro->gyro.y * gyro->gyro.y +
+              gyro->gyro.z * gyro->gyro.z);
+}
+
+// Funcion para obtener el nombre del tipo de caida
+const char* getFallTypeName(FallType type) {
+  switch (type) {
+    case FALL_FREE_FALL: return "CAIDA LIBRE";
+    case FALL_IMPACT:    return "IMPACTO";
+    case FALL_TILT:      return "INCLINACION";
+    case FALL_ROTATION:  return "ROTACION";
+    default:             return "NINGUNA";
+  }
+}
+
+// Algoritmo de deteccion de caidas con informacion detallada
+bool detectFallsWithInfo(MPU6050Data* data, FallInfo* info) {
+  // Validacion
+  if (data == nullptr || info == nullptr) {
+    return false;
+  }
+  
+  // Inicializar info
+  info->type = FALL_NONE;
+  info->thresholdTriggered = 0;
+  info->valueTriggered = 0;
+  
+  // 1. Calcular magnitud de aceleracion
+  info->accelMagnitude = calculateAccelMagnitude(&data->accel);
+  
+  // 2. Detectar caida libre (magnitud muy baja)
+  if (info->accelMagnitude < FREE_FALL_THRESHOLD) {
+    info->type = FALL_FREE_FALL;
+    info->thresholdTriggered = FREE_FALL_THRESHOLD;
+    info->valueTriggered = info->accelMagnitude;
+    return true;
+  }
+  
+  // 3. Detectar impacto (magnitud muy alta)
+  if (info->accelMagnitude > IMPACT_THRESHOLD) {
+    info->type = FALL_IMPACT;
+    info->thresholdTriggered = IMPACT_THRESHOLD;
+    info->valueTriggered = info->accelMagnitude;
+    return true;
+  }
+  
+  // 4. Calcular angulos de inclinacion
+  info->roll = calculateRoll(&data->accel);
+  info->pitch = calculatePitch(&data->accel);
+  
+  // // 5. Detectar inclinacion brusca
+  // if (fabs(info->roll) > TILT_THRESHOLD) {
+  //   info->type = FALL_TILT;
+  //   info->thresholdTriggered = TILT_THRESHOLD;
+  //   info->valueTriggered = info->roll;
+  //   return true;
+  // }
+  // if (fabs(info->pitch) > TILT_THRESHOLD) {
+  //   info->type = FALL_TILT;
+  //   info->thresholdTriggered = TILT_THRESHOLD;
+  //   info->valueTriggered = info->pitch;
+  //   return true;
+  // }
+  
+  // // 6. Calcular magnitud de velocidad angular
+  // info->gyroMagnitude = calculateGyroMagnitude(&data->gyro);
+  
+  // // 7. Detectar rotacion rapida
+  // if (info->gyroMagnitude > ROTATION_THRESHOLD) {
+  //   info->type = FALL_ROTATION;
+  //   info->thresholdTriggered = ROTATION_THRESHOLD;
+  //   info->valueTriggered = info->gyroMagnitude;
+  //   return true;
+  // }
+  
+  return false;
+}
+
+// Algoritmo de deteccion de caidas (simple)
+bool detectFalls(MPU6050Data* data) {
+  FallInfo info;
+  return detectFallsWithInfo(data, &info);
 }

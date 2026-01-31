@@ -4,8 +4,12 @@
 #include "transmitter.h"
 #include "lora_config.h"
 #include "receiver.h" // Para markPacketAsSeen()
+#include "gps_driver.h" // Para obtener coordenadas GPS reales
 
 // Nota: txDone ahora está definido en lora_config.cpp y es compartido
+
+// Variable externa para estado de caida (definida en main.cpp)
+extern volatile bool fallDetected;
 
 // --- Variables globales para el protocolo binario ---
 static uint16_t mySeqNumber = 0;
@@ -76,14 +80,17 @@ void sendMyStatus()
     // Crear buffer binario de 14 bytes
     uint8_t buffer[PACKET_SIZE];
 
-    // Coordenadas base (Madrid, España)
-    const float baseLatitude = 40.4168;
-    const float baseLongitude = -3.7038;
-    
-    // Añadir desviación aleatoria pequeña (±0.0001 grados ≈ 10 metros)
-    // Cada nodo y cada transmisión tendrá coordenadas ligeramente diferentes
-    float latitude = baseLatitude + (random(-1000, 1001) / 10000.0);
-    float longitude = baseLongitude + (random(-1000, 1001) / 10000.0);
+    // Obtener coordenadas del GPS
+    float latitude, longitude;
+    if (gps.hasFix() && gps.getAge() < 5000) {
+        // Fix válido y datos recientes (menos de 5 segundos)
+        latitude = (float)gps.getLatitude();
+        longitude = (float)gps.getLongitude();
+    } else {
+        // Sin fix válido: enviar -1.0 para indicar posición desconocida
+        latitude = GPS_NO_FIX_VALUE;
+        longitude = GPS_NO_FIX_VALUE;
+    }
 
     // Serializar cada campo en orden (big-endian para consistencia)
     buffer[0] = MY_ID;      // src (1 byte)
@@ -105,6 +112,15 @@ void sendMyStatus()
 
     buffer[12] = sosMode; // state (1 byte): 0=OK, 1=SOS
 
+    // st (1 byte): 0=sin caida, 1=caida detectada
+    uint8_t fallStatus = fallDetected ? 1 : 0;
+    buffer[13] = fallStatus;
+    
+    // Resetear flag de caida despues de incluirla en el mensaje
+    if (fallDetected) {
+        fallDetected = false;
+    }
+
     // === MEJORA 2: MARCAR PAQUETE PROPIO COMO VISTO ANTES DE ENVIAR ===
     // Así si nos llega de vuelta por reenvío, lo ignoraremos inmediatamente
     markPacketAsSeen(MY_ID, currentSeq);
@@ -116,8 +132,8 @@ void sendMyStatus()
     int16_t st = radio.startTransmit(buffer, PACKET_SIZE);
     if (st == RADIOLIB_ERR_NONE)
     {
-        Serial.printf("[MESH-TX] Enviado: src=%d, dst=%d, seq=%d, ttl=3, state=%d, lat=%.6f, lon=%.6f\n",
-                      MY_ID, GATEWAY_ID, currentSeq, sosMode, latitude, longitude);
+        Serial.printf("[MESH-TX] Enviado: src=%d, dst=%d, seq=%d, ttl=3, state=%d, lat=%.6f, lon=%.6f, st=%d\n",
+                      MY_ID, GATEWAY_ID, currentSeq, sosMode, latitude, longitude, fallStatus);
     }
     else
     {

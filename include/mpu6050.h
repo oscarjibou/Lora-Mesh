@@ -30,6 +30,21 @@ struct FallInfo {
   float valueTriggered;    // Valor que supero el umbral
 };
 
+// Estados de la máquina de detección de caídas
+enum FallDetectionState {
+  STATE_NORMAL = 0,           // Estado A - Esperando free-fall
+  STATE_FREE_FALL,            // Detectando duración de free-fall
+  STATE_FREE_FALL_CONFIRMED,  // Estado B - Ventana para impacto
+  STATE_IMPACT_DETECTED       // Estado C - Caída confirmada
+};
+
+// Contexto para la máquina de estados
+struct FallDetectionContext {
+  FallDetectionState state;
+  unsigned long freeFallStartTime;     // Cuando empezó el free-fall
+  unsigned long freeFallConfirmedTime; // Cuando se confirmó free-fall (80-300ms)
+};
+
 // Función para inicializar el sensor MPU6050
 void initMPU6050();
 
@@ -56,6 +71,13 @@ bool detectFallsWithInfo(MPU6050Data* data, FallInfo* info);
 
 // Funcion para obtener el nombre del tipo de caida
 const char* getFallTypeName(FallType type);
+
+// Inicializar el contexto de la máquina de estados de detección de caídas
+void initFallDetection(FallDetectionContext* ctx);
+
+// Procesar la máquina de estados de detección de caídas
+// Retorna true solo cuando se confirma una caída (free-fall seguido de impacto)
+bool processFallDetection(MPU6050Data* data, FallDetectionContext* ctx, FallInfo* info);
 
 #endif
 

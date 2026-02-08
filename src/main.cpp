@@ -20,8 +20,12 @@ GpsDriver gps;
 void fallDetectionTask(void *parameter) {
   MPU6050Data data;
   FallInfo info;
+  FallDetectionContext fallCtx;
   
-  Serial.println("[FALL] Tarea de deteccion de caidas iniciada");
+  // Inicializar la máquina de estados
+  initFallDetection(&fallCtx);
+  
+  Serial.println("[FALL] Tarea de deteccion de caidas iniciada (FSM)");
   
   while (true) {
     // Tomar el mutex antes de acceder al I2C
@@ -30,11 +34,12 @@ void fallDetectionTask(void *parameter) {
         // Liberar mutex despues de leer
         xSemaphoreGive(i2cMutex);
         
-        // Verificar caida con informacion detallada
-        if (detectFallsWithInfo(&data, &info)) {
+        // Procesar la máquina de estados de detección de caídas
+        // Solo retorna true cuando hay free-fall seguido de impacto
+        if (processFallDetection(&data, &fallCtx, &info)) {
           fallDetected = true;  // Marcar caida para incluir en el proximo mensaje
           Serial.println("\n========================================");
-          Serial.println("         CAIDA DETECTADA");
+          Serial.println("    CAIDA CONFIRMADA (FSM)");
           Serial.println("========================================");
           Serial.printf("TIPO: %s\n", getFallTypeName(info.type));
           Serial.println("----------------------------------------");
@@ -47,6 +52,9 @@ void fallDetectionTask(void *parameter) {
           Serial.printf("  Pitch:     %.2f deg\n", info.pitch);
           Serial.printf("  Gyro Mag:  %.2f rad/s\n", info.gyroMagnitude);
           Serial.println("========================================\n");
+          displayText("CAIDA DETECTADA!", 0, 16);
+          delay(2000);
+          clearDisplay();
         }
       } else {
         xSemaphoreGive(i2cMutex);
@@ -67,6 +75,61 @@ const bool isGatewayOnly = false;
 // 15000 = 15 segundos
 // 30000 = 30 segundos
 const unsigned long TX_INTERVAL_MS = 10000; // 10 segundos
+
+// Flag para esperar señal GPS antes de transmitir
+// true = Espera hasta obtener fix GPS válido antes de empezar
+// false = Comportamiento actual (empieza inmediatamente)
+const bool WAIT_FOR_GPS_FIX = true;
+
+// Función para esperar hasta obtener señal GPS válida
+void waitForGpsFix() {
+  Serial.println("[GPS] Esperando señal GPS...");
+  
+  unsigned long lastDisplayUpdate = 0;
+  const unsigned long DISPLAY_UPDATE_INTERVAL = 500; // ms
+  
+  while (!gps.hasFix()) {
+    gps.update();
+    
+    unsigned long now = millis();
+    if (now - lastDisplayUpdate >= DISPLAY_UPDATE_INTERVAL) {
+      lastDisplayUpdate = now;
+      
+      clearDisplay();
+      displayText("Buscando GPS...", 0, 0);
+      
+      char buffer[32];
+      snprintf(buffer, sizeof(buffer), "Satelites: %lu", gps.getSatellites());
+      displayText(buffer, 0, 16);
+      
+      snprintf(buffer, sizeof(buffer), "Chars: %lu", gps.getCharsProcessed());
+      displayText(buffer, 0, 32);
+      
+      snprintf(buffer, sizeof(buffer), "HDOP: %lu", gps.getHdop());
+      displayText(buffer, 0, 48);
+      
+      Serial.printf("[GPS] Satelites: %lu, Chars: %lu, HDOP: %lu\n",
+                    gps.getSatellites(), gps.getCharsProcessed(), gps.getHdop());
+    }
+    
+    delay(10);
+  }
+  
+  // Fix obtenido - mostrar éxito
+  clearDisplay();
+  displayText("GPS OK!", 0, 0);
+  char buffer[32];
+  snprintf(buffer, sizeof(buffer), "Lat: %.6f", gps.getLatitude());
+  displayText(buffer, 0, 16);
+  snprintf(buffer, sizeof(buffer), "Lon: %.6f", gps.getLongitude());
+  displayText(buffer, 0, 32);
+  
+  Serial.printf("[GPS] Fix obtenido! Lat: %.6f, Lon: %.6f\n",
+                gps.getLatitude(), gps.getLongitude());
+  
+  delay(2000); // Mostrar coordenadas 2 segundos
+  clearDisplay();
+}
 
 void setup()
 {
@@ -100,6 +163,11 @@ void setup()
   // Inicializar el módulo GPS NEO-6M
   gps.begin(GPS_TX_PIN, GPS_RX_PIN, GPS_BAUD);
   Serial.println("GPS NEO-6M inicializado. Esperando fix...");
+
+  // Esperar señal GPS si está configurado
+  if (WAIT_FOR_GPS_FIX) {
+    waitForGpsFix();
+  }
 
   // Crear tarea de deteccion de caidas en nucleo 0
   xTaskCreatePinnedToCore(

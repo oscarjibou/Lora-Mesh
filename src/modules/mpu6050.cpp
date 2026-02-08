@@ -15,10 +15,16 @@
 #define SCL_PIN 5
 
 // Umbrales configurables para deteccion de caidas
-#define FREE_FALL_THRESHOLD 2.0      // m/s2 (magnitud minima para caida libre)
-#define IMPACT_THRESHOLD 25.0        // m/s2 (magnitud maxima para impacto)
+#define FREE_FALL_THRESHOLD 2.45     // m/s2 (magnitud minima para caida libre)
+#define IMPACT_THRESHOLD 26.46       // m/s2 (magnitud maxima para impacto)
 #define TILT_THRESHOLD 45.0          // grados (inclinacion brusca)
 #define ROTATION_THRESHOLD 2.0       // rad/s (rotacion rapida)
+
+// Constantes temporales para la máquina de estados de detección de caídas
+#define FREE_FALL_MIN_DURATION_MS  80    // Mínimo tiempo en free-fall para confirmar
+#define FREE_FALL_MAX_DURATION_MS  300   // Máximo tiempo en free-fall antes de reset
+#define IMPACT_WINDOW_MIN_MS       100   // Ventana mínima para detectar impacto (0.1s)
+#define IMPACT_WINDOW_MAX_MS       1000  // Ventana máxima para detectar impacto (1.0s)
 
 // Instancia global (static) del sensor MPU6050
 static Adafruit_MPU6050 mpu;
@@ -234,4 +240,128 @@ bool detectFallsWithInfo(MPU6050Data* data, FallInfo* info) {
 bool detectFalls(MPU6050Data* data) {
   FallInfo info;
   return detectFallsWithInfo(data, &info);
+}
+
+// Inicializar el contexto de la máquina de estados
+void initFallDetection(FallDetectionContext* ctx) {
+  if (ctx == nullptr) {
+    return;
+  }
+  ctx->state = STATE_NORMAL;
+  ctx->freeFallStartTime = 0;
+  ctx->freeFallConfirmedTime = 0;
+}
+
+// Procesar la máquina de estados de detección de caídas
+// Retorna true solo cuando se confirma una caída (free-fall seguido de impacto)
+bool processFallDetection(MPU6050Data* data, FallDetectionContext* ctx, FallInfo* info) {
+  // Validación de parámetros
+  if (data == nullptr || ctx == nullptr || info == nullptr) {
+    return false;
+  }
+  
+  // Inicializar info
+  info->type = FALL_NONE;
+  info->thresholdTriggered = 0;
+  info->valueTriggered = 0;
+  
+  // Calcular magnitud de aceleración actual
+  info->accelMagnitude = calculateAccelMagnitude(&data->accel);
+  info->roll = calculateRoll(&data->accel);
+  info->pitch = calculatePitch(&data->accel);
+  info->gyroMagnitude = calculateGyroMagnitude(&data->gyro);
+  
+  unsigned long currentTime = millis();
+  
+  switch (ctx->state) {
+    case STATE_NORMAL:
+      // Estado A: Esperando inicio de free-fall
+      if (info->accelMagnitude < FREE_FALL_THRESHOLD) {
+        // Detectado inicio de posible caída libre
+        ctx->state = STATE_FREE_FALL;
+        ctx->freeFallStartTime = currentTime;
+        Serial.printf("[FALL FSM] NORMAL -> FREE_FALL (a_mag=%.2f < %.2f)\n", 
+                      info->accelMagnitude, FREE_FALL_THRESHOLD);
+      }
+      break;
+      
+    case STATE_FREE_FALL:
+      // Detectando duración de free-fall
+      {
+        unsigned long freeFallDuration = currentTime - ctx->freeFallStartTime;
+        
+        if (info->accelMagnitude >= FREE_FALL_THRESHOLD) {
+          // Free-fall terminó antes de tiempo mínimo
+          if (freeFallDuration < FREE_FALL_MIN_DURATION_MS) {
+            // Falso positivo: duración muy corta
+            ctx->state = STATE_NORMAL;
+            Serial.printf("[FALL FSM] FREE_FALL -> NORMAL (duración %lu ms < %d ms)\n", 
+                          freeFallDuration, FREE_FALL_MIN_DURATION_MS);
+          } else {
+            // Free-fall confirmado (duró suficiente), abrir ventana para impacto
+            ctx->state = STATE_FREE_FALL_CONFIRMED;
+            ctx->freeFallConfirmedTime = currentTime;
+            Serial.printf("[FALL FSM] FREE_FALL -> FREE_FALL_CONFIRMED (duración %lu ms)\n", 
+                          freeFallDuration);
+          }
+        } else if (freeFallDuration > FREE_FALL_MAX_DURATION_MS) {
+          // Free-fall demasiado largo sin terminar (poco realista)
+          ctx->state = STATE_NORMAL;
+          Serial.printf("[FALL FSM] FREE_FALL -> NORMAL (timeout %lu ms > %d ms)\n", 
+                        freeFallDuration, FREE_FALL_MAX_DURATION_MS);
+        }
+        // Si sigue en free-fall y dentro del rango temporal, mantener estado
+      }
+      break;
+      
+    case STATE_FREE_FALL_CONFIRMED:
+      // Estado B: Ventana abierta para detectar impacto
+      {
+        unsigned long timeSinceConfirmed = currentTime - ctx->freeFallConfirmedTime;
+        
+        // Verificar si hay impacto dentro de la ventana temporal
+        if (info->accelMagnitude > IMPACT_THRESHOLD) {
+          if (timeSinceConfirmed >= IMPACT_WINDOW_MIN_MS && 
+              timeSinceConfirmed <= IMPACT_WINDOW_MAX_MS) {
+            // ¡CAÍDA CONFIRMADA!
+            ctx->state = STATE_IMPACT_DETECTED;
+            Serial.printf("[FALL FSM] FREE_FALL_CONFIRMED -> IMPACT_DETECTED (a_mag=%.2f > %.2f, t=%lu ms)\n", 
+                          info->accelMagnitude, IMPACT_THRESHOLD, timeSinceConfirmed);
+          } else if (timeSinceConfirmed < IMPACT_WINDOW_MIN_MS) {
+            // Impacto demasiado pronto (posible ruido)
+            Serial.printf("[FALL FSM] Impacto ignorado: demasiado pronto (%lu ms < %d ms)\n", 
+                          timeSinceConfirmed, IMPACT_WINDOW_MIN_MS);
+          }
+        }
+        
+        // Timeout de la ventana de impacto
+        if (timeSinceConfirmed > IMPACT_WINDOW_MAX_MS) {
+          ctx->state = STATE_NORMAL;
+          Serial.printf("[FALL FSM] FREE_FALL_CONFIRMED -> NORMAL (timeout ventana impacto %lu ms)\n", 
+                        timeSinceConfirmed);
+        }
+      }
+      break;
+      
+    case STATE_IMPACT_DETECTED:
+      // Estado C: Caída confirmada - notificar y volver a normal
+      info->type = FALL_IMPACT;
+      info->thresholdTriggered = IMPACT_THRESHOLD;
+      info->valueTriggered = info->accelMagnitude;
+      
+      // Volver a estado normal para la próxima detección
+      ctx->state = STATE_NORMAL;
+      ctx->freeFallStartTime = 0;
+      ctx->freeFallConfirmedTime = 0;
+      
+      Serial.println("[FALL FSM] IMPACT_DETECTED -> NORMAL (caída notificada)");
+      return true;  // ¡Caída detectada!
+      
+    default:
+      // Estado inválido, resetear
+      ctx->state = STATE_NORMAL;
+      break;
+  }
+  
+  return false;  // No hay caída confirmada (todavía)
 }
